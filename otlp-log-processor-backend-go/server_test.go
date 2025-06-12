@@ -17,6 +17,7 @@ func TestLogsServiceServer_Export(t *testing.T) {
 	ctx := context.Background()
 
 	client, closer := server()
+
 	defer closer()
 
 	type expectation struct {
@@ -47,12 +48,14 @@ func TestLogsServiceServer_Export(t *testing.T) {
 	for scenario, tt := range tests {
 		t.Run(scenario, func(t *testing.T) {
 			out, err := client.Export(ctx, tt.in)
+
 			if err != nil {
 				if tt.expected.err.Error() != err.Error() {
 					t.Errorf("Err -> \nWant: %q\nGot: %q\n", tt.expected.err, err)
 				}
 			} else {
 				expectedPartialSuccess := tt.expected.out.GetPartialSuccess()
+
 				if expectedPartialSuccess.GetRejectedLogRecords() != out.GetPartialSuccess().GetRejectedLogRecords() ||
 					expectedPartialSuccess.GetErrorMessage() != out.GetPartialSuccess().GetErrorMessage() {
 					t.Errorf("Out -> \nWant: %q\nGot : %q", tt.expected.out, out)
@@ -65,30 +68,42 @@ func TestLogsServiceServer_Export(t *testing.T) {
 
 func server() (collogspb.LogsServiceClient, func()) {
 	addr := "localhost:4317"
+
 	buffer := 101024 * 1024
+
 	lis := bufconn.Listen(buffer)
 
 	baseServer := grpc.NewServer()
-	collogspb.RegisterLogsServiceServer(baseServer, newServer(addr))
+
+	collogspb.RegisterLogsServiceServer(baseServer, newServer(newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)))
+
 	go func() {
 		if err := baseServer.Serve(lis); err != nil {
 			log.Printf("error serving server: %v", err)
 		}
 	}()
 
-	conn, err := grpc.NewClient(addr,
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
-			return lis.Dial()
-		}), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(
+		addr,
+		grpc.WithContextDialer(
+			func(context.Context, string) (net.Conn, error) {
+				return lis.Dial()
+			},
+		),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+
 	if err != nil {
 		log.Printf("error connecting to server: %v", err)
 	}
 
 	closer := func() {
 		err := lis.Close()
+
 		if err != nil {
 			log.Printf("error closing listener: %v", err)
 		}
+
 		baseServer.Stop()
 	}
 

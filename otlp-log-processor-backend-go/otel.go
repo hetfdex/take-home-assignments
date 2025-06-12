@@ -35,10 +35,13 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	// Each registered cleanup will be invoked once.
 	shutdown = func(ctx context.Context) error {
 		var err error
+
 		for _, fn := range shutdownFuncs {
 			err = errors.Join(err, fn(ctx))
 		}
+
 		shutdownFuncs = nil
+
 		return err
 	}
 
@@ -49,33 +52,44 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 
 	// Set up propagator.
 	prop := newPropagator()
+
 	otel.SetTextMapPropagator(prop)
 
 	// Set up trace provider.
 	tracerProvider, err := newTraceProvider()
+
 	if err != nil {
 		handleErr(err)
+
 		return
 	}
+
 	shutdownFuncs = append(shutdownFuncs, tracerProvider.Shutdown)
+
 	otel.SetTracerProvider(tracerProvider)
 
 	// Set up meter provider.
 	meterProvider, err := newMeterProvider()
+
 	if err != nil {
 		handleErr(err)
+
 		return
 	}
 	shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
+
 	otel.SetMeterProvider(meterProvider)
 
 	// Set up logger provider.
 	loggerProvider, err := newLoggerProvider()
+
 	if err != nil {
 		handleErr(err)
+
 		return
 	}
 	shutdownFuncs = append(shutdownFuncs, loggerProvider.Shutdown)
+
 	global.SetLoggerProvider(loggerProvider)
 
 	return
@@ -90,7 +104,9 @@ func newPropagator() propagation.TextMapPropagator {
 
 func newTraceProvider() (*trace.TracerProvider, error) {
 	traceExporter, err := stdouttrace.New(
-		stdouttrace.WithPrettyPrint())
+		stdouttrace.WithPrettyPrint(),
+	)
+
 	if err != nil {
 		return nil, err
 	}
@@ -98,30 +114,40 @@ func newTraceProvider() (*trace.TracerProvider, error) {
 	traceProvider := trace.NewTracerProvider(
 		trace.WithResource(res),
 		trace.WithSampler(trace.AlwaysSample()),
-		trace.WithBatcher(traceExporter,
+		trace.WithBatcher(
+			traceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
-			trace.WithBatchTimeout(time.Second)),
+			trace.WithBatchTimeout(time.Second),
+		),
 	)
+
 	return traceProvider, nil
 }
 
 func newMeterProvider() (*metric.MeterProvider, error) {
 	metricExporter, err := stdoutmetric.New(stdoutmetric.WithPrettyPrint())
+
 	if err != nil {
 		return nil, err
 	}
 
 	meterProvider := metric.NewMeterProvider(
 		metric.WithResource(res),
-		metric.WithReader(metric.NewPeriodicReader(metricExporter,
-			// Default is 1m. Set to 10s for demonstrative purposes.
-			metric.WithInterval(10*time.Second))),
+		metric.WithReader(
+			metric.NewPeriodicReader(
+				metricExporter,
+				// Default is 1m. Set to 10s for demonstrative purposes.
+				metric.WithInterval(10*time.Second),
+			),
+		),
 	)
+
 	return meterProvider, nil
 }
 
 func newLoggerProvider() (*log.LoggerProvider, error) {
 	logExporter, err := stdoutlog.New(stdoutlog.WithPrettyPrint())
+
 	if err != nil {
 		return nil, err
 	}
@@ -130,5 +156,6 @@ func newLoggerProvider() (*log.LoggerProvider, error) {
 		log.WithResource(res),
 		log.WithProcessor(log.NewBatchProcessor(logExporter)),
 	)
+
 	return loggerProvider, nil
 }
