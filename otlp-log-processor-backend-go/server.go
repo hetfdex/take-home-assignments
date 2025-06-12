@@ -96,7 +96,11 @@ func run() (err error) {
 		grpc.Creds(insecure.NewCredentials()),
 	)
 
-	processor := newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)
+	processor, err := newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)
+
+	if err != nil {
+		return err
+	}
 
 	svr := newServer(processor)
 

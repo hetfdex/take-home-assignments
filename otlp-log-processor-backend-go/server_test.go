@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"testing"
+	"time"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	otellogs "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -69,13 +70,23 @@ func TestLogsServiceServer_Export(t *testing.T) {
 func server() (collogspb.LogsServiceClient, func()) {
 	addr := "localhost:4317"
 
-	buffer := 101024 * 1024
+	msgBuff := 101024 * 1024
 
-	lis := bufconn.Listen(buffer)
+	attKey := "foo"
+
+	procInt := 5 * time.Second
+
+	logBuff := 10
+
+	workers := 2
+
+	lis := bufconn.Listen(msgBuff)
 
 	baseServer := grpc.NewServer()
 
-	collogspb.RegisterLogsServiceServer(baseServer, newServer(newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)))
+	logsProcessor, _ := newLogsProcessor(attKey, procInt, logBuff, workers)
+
+	collogspb.RegisterLogsServiceServer(baseServer, newServer(logsProcessor))
 
 	go func() {
 		if err := baseServer.Serve(lis); err != nil {

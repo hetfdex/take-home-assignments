@@ -29,7 +29,23 @@ func newLogsProcessor(
 	processingInterval time.Duration,
 	bufferSize int,
 	numberOfWorkers int,
-) *logsProcessor {
+) (*logsProcessor, error) {
+	if attributeKey == "" {
+		return nil, fmt.Errorf("attributeKey cannot be empty")
+	}
+
+	if processingInterval <= 0 {
+		return nil, fmt.Errorf("processingInterval must be positive")
+	}
+
+	if bufferSize <= 0 {
+		return nil, fmt.Errorf("bufferSize must be positive")
+	}
+
+	if numberOfWorkers <= 0 {
+		return nil, fmt.Errorf("numberOfWorkers must be positive")
+	}
+
 	logsProcessor := &logsProcessor{
 		attributeKey:       attributeKey,
 		processingInterval: processingInterval,
@@ -43,7 +59,7 @@ func newLogsProcessor(
 
 	go logsProcessor.startProcessor()
 
-	return logsProcessor
+	return logsProcessor, nil
 }
 
 func (p *logsProcessor) startWorkers() {
@@ -104,8 +120,12 @@ func (p *logsProcessor) restartProcessor() {
 func (p *logsProcessor) writeReport() {
 	fmt.Println("=== Log Counts Report ===")
 
-	for attributeValue, attributeCount := range p.attributeCounter {
-		fmt.Printf("  %s: %d unique logs\n", attributeValue, attributeCount)
+	if len(p.attributeCounter) == 0 {
+		fmt.Println("  No logs processed in this interval")
+	} else {
+		for attributeValue, attributeCount := range p.attributeCounter {
+			fmt.Printf("  %s: %d unique logs\n", attributeValue, attributeCount)
+		}
 	}
 
 	fmt.Println("=====================================")
@@ -198,7 +218,7 @@ func (p *logsProcessor) shutdown(ctx context.Context) error {
 }
 
 func attributesToMap(attributes []*commonpb.KeyValue) map[string]any {
-	res := make(map[string]any)
+	res := make(map[string]any, len(attributes))
 
 	for _, attribute := range attributes {
 		if attribute.Key != "" {
