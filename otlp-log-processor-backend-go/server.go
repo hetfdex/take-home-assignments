@@ -7,6 +7,10 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -15,27 +19,35 @@ import (
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-)
-
-var (
-	listenAddr            = flag.String("listenAddr", "localhost:4317", "The listen address")
-	maxReceiveMessageSize = flag.Int("maxReceiveMessageSize", 16777216, "The max message size in bytes the server can receive")
+	"google.golang.org/grpc/reflection"
 )
 
 const name = "dash0.com/otlp-log-processor-backend"
 
 var (
-	tracer              = otel.Tracer(name)
-	meter               = otel.Meter(name)
-	logger              = otelslog.NewLogger(name)
+	meter  = otel.Meter(name)
+	logger = otelslog.NewLogger(name)
+
 	logsReceivedCounter metric.Int64Counter
+
+	listenAddr            = flag.String("listenAddr", "localhost:4317", "The listen address")
+	maxReceiveMessageSize = flag.Int("maxReceiveMessageSize", 16777216, "The max message size in bytes the server can receive")
+	attributeKey          = flag.String("attributeKey", "foo", "The attribute key to use for counting logs")
+	processingInterval    = flag.Duration("processingInterval", 10*time.Second, "The interval at which logs are processed")
+	bufferSize            = flag.Int("bufferSize", 1000, "The size of the buffer for incoming logs, must be greater than 0")
+	numberOfWorkers       = flag.Int("numberOfWorkers", 2, "Number of workers to process logs concurrently, must be greater than 0")
+	shutdownTimeout       = flag.Duration("shutdownTimeout", 30*time.Second, "Timeout for graceful shutdown of the server, must be greater than 0")
 )
 
 func init() {
 	var err error
-	logsReceivedCounter, err = meter.Int64Counter("com.dash0.homeexercise.logs.received",
+
+	logsReceivedCounter, err = meter.Int64Counter(
+		"com.dash0.homeexercise.logs.received",
 		metric.WithDescription("The number of logs received by otlp-log-processor-backend"),
-		metric.WithUnit("{log}"))
+		metric.WithUnit("{log}"),
+	)
+
 	if err != nil {
 		panic(err)
 	}
@@ -49,10 +61,12 @@ func main() {
 
 func run() (err error) {
 	slog.SetDefault(logger)
+
 	logger.Info("Starting application")
 
 	// Set up OpenTelemetry.
 	otelShutdown, err := setupOTelSDK(context.Background())
+
 	if err != nil {
 		return
 	}
@@ -65,7 +79,9 @@ func run() (err error) {
 	flag.Parse()
 
 	slog.Debug("Starting listener", slog.String("listenAddr", *listenAddr))
+
 	listener, err := net.Listen("tcp", *listenAddr)
+
 	if err != nil {
 		return err
 	}
@@ -75,9 +91,58 @@ func run() (err error) {
 		grpc.MaxRecvMsgSize(*maxReceiveMessageSize),
 		grpc.Creds(insecure.NewCredentials()),
 	)
-	collogspb.RegisterLogsServiceServer(grpcServer, newServer(*listenAddr))
 
-	slog.Debug("Starting gRPC server")
+	processor := newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)
 
-	return grpcServer.Serve(listener)
+	svr := newServer(processor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+
+		slog.Info("Received shutdown signal")
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
+
+		defer shutdownCancel()
+
+		if err := processor.shutdown(shutdownCtx); err != nil {
+			slog.Error("Error shutting down processor", "error", err)
+		}
+
+		grpcServer.GracefulStop()
+
+		cancel()
+	}()
+
+	collogspb.RegisterLogsServiceServer(grpcServer, svr)
+
+	reflection.Register(grpcServer)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		slog.Info("Starting gRPC server", "address", *listenAddr)
+
+		serverErr <- grpcServer.Serve(listener)
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			slog.Error("gRPC server error", "error", err)
+
+			return err
+		}
+	case <-ctx.Done():
+		slog.Info("Application shutdown complete")
+	}
+
+	return nil
 }
