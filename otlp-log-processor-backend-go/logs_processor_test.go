@@ -18,7 +18,7 @@ import (
 
 func TestLogProcessor(t *testing.T) {
 	t.Run("processes logs correctly with string values", func(t *testing.T) {
-		processor := makeLogsProcessor(t, nil, &safeWriter{}, 3*time.Second, 1000, 5)
+		processor := makeLogsProcessor(t, nil, &safeWriter{}, 100, 5)
 
 		defer processor.shutdown(context.Background())
 
@@ -26,7 +26,7 @@ func TestLogProcessor(t *testing.T) {
 
 		assert.NoError(t, err)
 
-		waitForProcessing(t, processor, 50*time.Millisecond)
+		waitForProcessing(t, processor)
 
 		processor.mu.RLock()
 
@@ -39,7 +39,7 @@ func TestLogProcessor(t *testing.T) {
 	})
 
 	t.Run("processes logs correctly with other values", func(t *testing.T) {
-		processor := makeLogsProcessor(t, nil, &safeWriter{}, 3*time.Second, 1000, 5)
+		processor := makeLogsProcessor(t, nil, &safeWriter{}, 100, 5)
 
 		defer processor.shutdown(context.Background())
 
@@ -47,7 +47,7 @@ func TestLogProcessor(t *testing.T) {
 
 		assert.NoError(t, err)
 
-		waitForProcessing(t, processor, 50*time.Millisecond)
+		waitForProcessing(t, processor)
 
 		processor.mu.RLock()
 
@@ -61,35 +61,10 @@ func TestLogProcessor(t *testing.T) {
 
 	})
 
-	t.Run("restarts correctly", func(t *testing.T) {
-		processor := makeLogsProcessor(t, nil, &safeWriter{}, 100*time.Millisecond, 1000, 5)
-
-		defer processor.shutdown(context.Background())
-
-		processor.queueLog(context.Background(), "test_01")
-		processor.queueLog(context.Background(), "test_02")
-
-		waitForProcessing(t, processor, 10*time.Millisecond)
-
-		processor.mu.RLock()
-
-		assert.Equal(t, 2, len(processor.attributeCounter))
-
-		processor.mu.RUnlock()
-
-		time.Sleep(200 * time.Millisecond)
-
-		processor.mu.RLock()
-
-		assert.Empty(t, processor.attributeCounter)
-
-		processor.mu.RUnlock()
-	})
-
 	t.Run("outputs report correctly", func(t *testing.T) {
 		writer := &safeWriter{}
 
-		processor := makeLogsProcessor(t, nil, writer, 100*time.Millisecond, 1000, 5)
+		processor := makeLogsProcessor(t, nil, writer, 100, 5)
 
 		defer processor.shutdown(context.Background())
 
@@ -97,8 +72,9 @@ func TestLogProcessor(t *testing.T) {
 
 		assert.NoError(t, err)
 
-		waitForProcessing(t, processor, 10*time.Millisecond)
+		waitForProcessing(t, processor)
 
+		// wait for report
 		time.Sleep(200 * time.Millisecond)
 
 		outputStr := writer.String()
@@ -107,6 +83,33 @@ func TestLogProcessor(t *testing.T) {
 		assert.Contains(t, outputStr, "some_scope_value - 1")
 		assert.Contains(t, outputStr, "some_log_value - 1")
 		assert.Contains(t, outputStr, "unknown - 1")
+	})
+
+	t.Run("restarts correctly", func(t *testing.T) {
+		processor := makeLogsProcessor(t, nil, &safeWriter{}, 100, 5)
+
+		defer processor.shutdown(context.Background())
+
+		err := processor.processLogs(context.Background(), makeOtherValuesReq())
+
+		assert.NoError(t, err)
+
+		waitForProcessing(t, processor)
+
+		processor.mu.RLock()
+
+		assert.Equal(t, 5, len(processor.attributeCounter))
+
+		processor.mu.RUnlock()
+
+		// wait for restart
+		time.Sleep(200 * time.Millisecond)
+
+		processor.mu.RLock()
+
+		assert.Empty(t, processor.attributeCounter)
+
+		processor.mu.RUnlock()
 	})
 
 	t.Run("drops logs when queue is full", func(t *testing.T) {
@@ -121,10 +124,12 @@ func TestLogProcessor(t *testing.T) {
 			),
 		)
 
-		processor := makeLogsProcessor(t, logger, &safeWriter{}, 10*time.Second, 2, 1)
+		// small queue size and single worker to trigger the full condition
+		processor := makeLogsProcessor(t, logger, &safeWriter{}, 2, 1)
 
 		defer processor.shutdown(context.Background())
 
+		// fill the queue to trigger the full condition
 		for i := range 20 {
 			processor.queueLog(context.Background(), fmt.Sprintf("log_%d", i))
 		}
@@ -138,7 +143,6 @@ func TestLogProcessor(t *testing.T) {
 func makeLogsProcessor(t *testing.T,
 	logger *slog.Logger,
 	safeWriter *safeWriter,
-	processingInterval time.Duration,
 	attributeChanSize int,
 	numberOfWorkers int,
 ) *logsProcessor {
@@ -148,7 +152,7 @@ func makeLogsProcessor(t *testing.T,
 		logger,
 		safeWriter,
 		"foo",
-		processingInterval,
+		100*time.Millisecond,
 		attributeChanSize,
 		numberOfWorkers,
 	)
@@ -158,16 +162,22 @@ func makeLogsProcessor(t *testing.T,
 	return processor
 }
 
+// waitForProcessing waits for the logs processor to finish processing logs.
+// It checks the attribute channel and the attribute counter map to ensure
+// that the processing has stabilized, meaning no new attributes are being added
+// and the size of the attribute counter map remains constant for a certain number
+// of iterations. If the processing does not stabilize within the timeout period,
+// it fails the test. This function is useful for ensuring that the logs processor
+// has completed its work before proceeding with assertions in tests.
 func waitForProcessing(
 	t *testing.T,
 	processor *logsProcessor,
-	tickerDuration time.Duration,
 ) {
 	t.Helper()
 
 	timeout := time.After(30 * time.Second)
 
-	ticker := time.NewTicker(tickerDuration)
+	ticker := time.NewTicker(10 * time.Millisecond)
 
 	defer ticker.Stop()
 
@@ -205,11 +215,18 @@ func waitForProcessing(
 	}
 }
 
+// safeWriter is a thread-safe writer that uses a mutex to ensure that writes
+// to the underlying strings.Builder are synchronized. This is useful in a
+// concurrent environment where multiple goroutines may attempt to write to the
+// same writer at the same time.
 type safeWriter struct {
 	mu      sync.RWMutex
 	builder strings.Builder
 }
 
+// Write implements the io.Writer interface for safeWriter. It locks the mutex
+// before writing to the underlying strings.Builder to ensure that writes are
+// synchronized across multiple goroutines.
 func (sw *safeWriter) Write(p []byte) (n int, err error) {
 	sw.mu.Lock()
 
@@ -218,6 +235,9 @@ func (sw *safeWriter) Write(p []byte) (n int, err error) {
 	return sw.builder.Write(p)
 }
 
+// String returns the string representation of the underlying strings.Builder.
+// It locks the mutex for reading to ensure that the string is read safely
+// in a concurrent environment.
 func (sw *safeWriter) String() string {
 	sw.mu.RLock()
 
