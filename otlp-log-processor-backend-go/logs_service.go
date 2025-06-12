@@ -31,7 +31,7 @@ func (l *dash0LogsServiceServer) Export(
 
 	logsReceivedCounter.Add(ctx, 1)
 
-	if err := l.logsProcessor.processLogs(request); err != nil {
+	if err := l.logsProcessor.processLogs(ctx, request); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 

@@ -111,7 +111,9 @@ func (p *logsProcessor) writeReport() {
 	fmt.Println("=====================================")
 }
 
-func (p *logsProcessor) processLogs(request *collogspb.ExportLogsServiceRequest) error {
+func (p *logsProcessor) processLogs(
+	ctx context.Context,
+	request *collogspb.ExportLogsServiceRequest) error {
 	for _, resourceLog := range request.GetResourceLogs() {
 		resourceLogsMap := attributesToMap(resourceLog.GetResource().GetAttributes())
 
@@ -122,6 +124,7 @@ func (p *logsProcessor) processLogs(request *collogspb.ExportLogsServiceRequest)
 				logRecordsMap := attributesToMap(logRecord.GetAttributes())
 
 				err := p.processLog(
+					ctx,
 					resourceLogsMap,
 					scopeLogsMap,
 					logRecordsMap,
@@ -138,36 +141,37 @@ func (p *logsProcessor) processLogs(request *collogspb.ExportLogsServiceRequest)
 }
 
 func (p *logsProcessor) processLog(
+	ctx context.Context,
 	resourceLogsMap map[string]any,
 	scopeLogsMap map[string]any,
 	logRecordsMap map[string]any,
 ) error {
 	if attribute, exists := getStringAttribute(resourceLogsMap, p.attributeKey); exists {
-		p.queueLog(attribute)
+		p.queueLog(ctx, attribute)
 	}
 
 	if attribute, exists := getStringAttribute(scopeLogsMap, p.attributeKey); exists {
-		p.queueLog(attribute)
+		p.queueLog(ctx, attribute)
 	}
 
 	if attribute, exists := getStringAttribute(logRecordsMap, p.attributeKey); exists {
-		p.queueLog(attribute)
+		p.queueLog(ctx, attribute)
 	}
 
 	if !hasAttributeAnywhere(resourceLogsMap, scopeLogsMap, logRecordsMap, p.attributeKey) {
-		p.queueLog("unknown")
+		p.queueLog(ctx, "unknown")
 	}
 
 	return nil
 }
 
-func (p *logsProcessor) queueLog(attributeValue string) {
+func (p *logsProcessor) queueLog(ctx context.Context, attributeValue string) {
 	select {
 	case p.attributeChan <- attributeValue:
 		// log queued
 	default:
 		// exceeded buffer size
-		slog.Error("Queue is full, dropping log", slog.String("attribute", attributeValue))
+		slog.ErrorContext(ctx, "Queue is full, dropping log", slog.String("attribute", attributeValue))
 	}
 }
 
@@ -187,7 +191,7 @@ func (p *logsProcessor) shutdown(ctx context.Context) error {
 		// all good
 		return nil
 	case <-ctx.Done():
-		slog.Error("Shutdown timeout exceeded")
+		slog.ErrorContext(ctx, "Shutdown timeout exceeded")
 
 		return ctx.Err()
 	}

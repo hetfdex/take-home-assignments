@@ -78,7 +78,11 @@ func run() (err error) {
 
 	flag.Parse()
 
-	slog.Debug("Starting listener", slog.String("listenAddr", *listenAddr))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
+
+	slog.DebugContext(ctx, "Starting listener", slog.String("listenAddr", *listenAddr))
 
 	listener, err := net.Listen("tcp", *listenAddr)
 
@@ -96,10 +100,6 @@ func run() (err error) {
 
 	svr := newServer(processor)
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	defer cancel()
-
 	sigChan := make(chan os.Signal, 1)
 
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -107,14 +107,14 @@ func run() (err error) {
 	go func() {
 		<-sigChan
 
-		slog.Info("Received shutdown signal")
+		slog.InfoContext(ctx, "Received shutdown signal")
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 
 		defer shutdownCancel()
 
 		if err := processor.shutdown(shutdownCtx); err != nil {
-			slog.Error("Error shutting down processor", "error", err)
+			slog.ErrorContext(ctx, "Error shutting down processor", "error", err)
 		}
 
 		grpcServer.GracefulStop()
@@ -128,7 +128,7 @@ func run() (err error) {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		slog.Info("Starting gRPC server", "address", *listenAddr)
+		slog.InfoContext(ctx, "Starting gRPC server", "address", *listenAddr)
 
 		serverErr <- grpcServer.Serve(listener)
 	}()
@@ -136,12 +136,12 @@ func run() (err error) {
 	select {
 	case err := <-serverErr:
 		if err != nil {
-			slog.Error("gRPC server error", "error", err)
+			slog.ErrorContext(ctx, "gRPC server error", "error", err)
 
 			return err
 		}
 	case <-ctx.Done():
-		slog.Info("Application shutdown complete")
+		slog.InfoContext(ctx, "Application shutdown complete")
 	}
 
 	return nil
