@@ -32,9 +32,9 @@ var (
 
 	listenAddr            = flag.String("listenAddr", "localhost:4317", "The listen address")
 	maxReceiveMessageSize = flag.Int("maxReceiveMessageSize", 16777216, "The max message size in bytes the server can receive")
-	attributeKey          = flag.String("attributeKey", "foo", "The attribute key to use for counting logs")
-	processingInterval    = flag.Duration("processingInterval", 10*time.Second, "The interval at which logs are processed")
-	bufferSize            = flag.Int("bufferSize", 1000, "The size of the buffer for incoming logs, must be greater than 0")
+	attributeKey          = flag.String("attributeKey", "foo", "The attribute key to use for counting logs, must not be empty")
+	processingInterval    = flag.Duration("processingInterval", 10*time.Second, "The interval at which logs are processed, must be greater than 0")
+	attributeChanSize     = flag.Int("attributeChanSize", 1000, "Size of the channel for receiving attributes, must be greater than 0")
 	numberOfWorkers       = flag.Int("numberOfWorkers", 2, "Number of workers to process logs concurrently, must be greater than 0")
 	shutdownTimeout       = flag.Duration("shutdownTimeout", 30*time.Second, "Timeout for graceful shutdown of the server, must be greater than 0")
 )
@@ -78,6 +78,7 @@ func run() (err error) {
 
 	flag.Parse()
 
+	// create a context with a cancel function to handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 
 	defer cancel()
@@ -96,7 +97,7 @@ func run() (err error) {
 		grpc.Creds(insecure.NewCredentials()),
 	)
 
-	processor, err := newLogsProcessor(*attributeKey, *processingInterval, *bufferSize, *numberOfWorkers)
+	processor, err := newLogsProcessor(logger, os.Stdout, *attributeKey, *processingInterval, *attributeChanSize, *numberOfWorkers)
 
 	if err != nil {
 		return err
@@ -104,15 +105,23 @@ func run() (err error) {
 
 	svr := newServer(processor)
 
+	// set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 
+	// notify the channel on interrupt or termination signals
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
+	// run the shutdown logic in a separate goroutine
 	go func() {
+		// close the channel after the goroutine completes
+		defer close(sigChan)
+
+		// wait for a signal to shut down
 		<-sigChan
 
 		slog.InfoContext(ctx, "Received shutdown signal")
 
+		// initiate shutdown of the processor
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 
 		defer shutdownCancel()
@@ -121,16 +130,20 @@ func run() (err error) {
 			slog.ErrorContext(ctx, "Error shutting down processor", "error", err)
 		}
 
+		// gracefully stop the gRPC server
 		grpcServer.GracefulStop()
 
+		// close the listener to stop accepting new connections
 		cancel()
 	}()
 
 	collogspb.RegisterLogsServiceServer(grpcServer, svr)
 
+	// register reflection service for gRPC server introspection
 	reflection.Register(grpcServer)
 
 	serverErr := make(chan error, 1)
+
 	go func() {
 		slog.InfoContext(ctx, "Starting gRPC server", "address", *listenAddr)
 

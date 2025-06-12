@@ -70,21 +70,21 @@ func TestLogsServiceServer_Export(t *testing.T) {
 func server() (collogspb.LogsServiceClient, func()) {
 	addr := "localhost:4317"
 
-	msgBuff := 101024 * 1024
+	msgSize := 101024 * 1024
 
 	attKey := "foo"
 
 	procInt := 5 * time.Second
 
-	logBuff := 10
+	attSize := 10
 
 	workers := 2
 
-	lis := bufconn.Listen(msgBuff)
+	lis := bufconn.Listen(msgSize)
 
 	baseServer := grpc.NewServer()
 
-	logsProcessor, _ := newLogsProcessor(attKey, procInt, logBuff, workers)
+	logsProcessor, _ := newLogsProcessor(nil, nil, attKey, procInt, attSize, workers)
 
 	collogspb.RegisterLogsServiceServer(baseServer, newServer(logsProcessor))
 

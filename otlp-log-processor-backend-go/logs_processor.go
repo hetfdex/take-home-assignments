@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -13,6 +14,9 @@ import (
 )
 
 type logsProcessor struct {
+	logger *slog.Logger
+	writer io.Writer
+
 	attributeKey       string
 	processingInterval time.Duration
 	attributeCounter   map[string]int
@@ -25,9 +29,11 @@ type logsProcessor struct {
 }
 
 func newLogsProcessor(
+	logger *slog.Logger,
+	writer io.Writer,
 	attributeKey string,
 	processingInterval time.Duration,
-	bufferSize int,
+	attributeChanSize int,
 	numberOfWorkers int,
 ) (*logsProcessor, error) {
 	if attributeKey == "" {
@@ -38,8 +44,8 @@ func newLogsProcessor(
 		return nil, fmt.Errorf("processingInterval must be positive")
 	}
 
-	if bufferSize <= 0 {
-		return nil, fmt.Errorf("bufferSize must be positive")
+	if attributeChanSize <= 0 {
+		return nil, fmt.Errorf("attributeChanSize must be positive")
 	}
 
 	if numberOfWorkers <= 0 {
@@ -47,11 +53,13 @@ func newLogsProcessor(
 	}
 
 	logsProcessor := &logsProcessor{
+		logger:             logger,
+		writer:             writer,
 		attributeKey:       attributeKey,
 		processingInterval: processingInterval,
 		numberOfWorkers:    numberOfWorkers,
 		attributeCounter:   make(map[string]int),
-		attributeChan:      make(chan string, bufferSize),
+		attributeChan:      make(chan string, attributeChanSize),
 		shutdownChan:       make(chan struct{}),
 	}
 
@@ -118,17 +126,13 @@ func (p *logsProcessor) restartProcessor() {
 }
 
 func (p *logsProcessor) writeReport() {
-	fmt.Println("=== Log Counts Report ===")
+	fmt.Fprintln(p.writer, "=== Log Counts Report ===")
 
-	if len(p.attributeCounter) == 0 {
-		fmt.Println("  No logs processed in this interval")
-	} else {
-		for attributeValue, attributeCount := range p.attributeCounter {
-			fmt.Printf("  %s: %d unique logs\n", attributeValue, attributeCount)
-		}
+	for attributeValue, attributeCount := range p.attributeCounter {
+		fmt.Fprintf(p.writer, "%s - %d\n", attributeValue, attributeCount)
 	}
 
-	fmt.Println("=====================================")
+	fmt.Fprintln(p.writer, "=====================================")
 }
 
 func (p *logsProcessor) processLogs(
@@ -188,10 +192,10 @@ func (p *logsProcessor) processLog(
 func (p *logsProcessor) queueLog(ctx context.Context, attributeValue string) {
 	select {
 	case p.attributeChan <- attributeValue:
-		// log queued
+		// log is queued for processing
 	default:
-		// exceeded buffer size
-		slog.ErrorContext(ctx, "Queue is full, dropping log", slog.String("attribute", attributeValue))
+		// log is dropped because the channel is full
+		p.logger.ErrorContext(ctx, "Queue is full, dropping log", slog.String("attribute", attributeValue))
 	}
 }
 
@@ -208,10 +212,10 @@ func (p *logsProcessor) shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		// all good
+		// all workers have been shut down
 		return nil
 	case <-ctx.Done():
-		slog.ErrorContext(ctx, "Shutdown timeout exceeded")
+		p.logger.ErrorContext(ctx, "Shutdown timeout exceeded")
 
 		return ctx.Err()
 	}
